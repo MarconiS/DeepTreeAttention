@@ -35,24 +35,21 @@ def spatial_network(x, classes=2):
     x = conv_module(x, K=32, maxpool=False)
 
     #Weak attention
-    x, attention_1 = spatial_attention(filters=32, classes=classes, x=x)
+    x, attention_1, pool_1 = spatial_attention(filters=32, classes=classes, x=x)
 
     #Second submodel is 64 filters - 2nd gets maxpool
     x = conv_module(x, K=64, maxpool=True)
 
     #Weak Attention
-    x, attention_2 = spatial_attention(filters=64, classes=classes, x=x)
+    x, attention_2, pool_2 = spatial_attention(filters=64, classes=classes, x=x)
 
     #Third submodel is 128 filters - 3rd gets maxpool
     x = conv_module(x, K=128, maxpool=True)
 
     #Weak Attention
-    x, attention_3 = spatial_attention(filters=128, classes=classes, x=x)
+    x, attention_3, pool_3 = spatial_attention(filters=128, classes=classes, x=x)
 
-    x = layers.Flatten()(x)
-    x = layers.Dense(classes, activation="softmax", name="spatial_softmax")(x)
-
-    return x, [attention_1, attention_2, attention_3]
+    return [attention_1, attention_2, attention_3], [pool_1,pool_2,pool_3]
 
 
 def spectral_network(x, classes=2):
@@ -61,20 +58,17 @@ def spectral_network(x, classes=2):
     """
     #First submodel is 32 filter
     x = conv_module(x, K=32, maxpool=False)
-    x, attention_1 = spectral_attention(filters=32, classes=classes, x=x)
+    x, attention_1, pool_1 = spectral_attention(filters=32, classes=classes, x=x)
 
     #Second submodel is 64 filters
     x = conv_module(x, K=64, maxpool=True)
-    x, attention_2 = spectral_attention(filters=64, classes=classes, x=x)
+    x, attention_2, pool_2 = spectral_attention(filters=64, classes=classes, x=x)
 
     #Third submodel is 128 filters
     x = conv_module(x, K=128, maxpool=True)
-    x, attention_3 = spectral_attention(filters=128, classes=classes, x=x)
+    x, attention_3, pool_3 = spectral_attention(filters=128, classes=classes, x=x)
 
-    x = layers.Flatten()(x)
-    x = layers.Dense(classes, activation="softmax", name="spectral_softmax")(x)
-
-    return x, [attention_1, attention_2, attention_3]
+    return [attention_1, attention_2, attention_3], [pool_1,pool_2,pool_3]
 
 
 def spectral_attention(filters, classes, x):
@@ -127,12 +121,12 @@ def spectral_attention(filters, classes, x):
         raise ValueError("Unknown filter size for max pooling")
 
     class_pool = layers.MaxPool2D(pool_size)(attention_layers)
-    class_pool = layers.Flatten()(class_pool)
+    class_pool = layers.Flatten(name="spectral_pooling_filters_{}".format(filters))(class_pool)
     output = layers.Dense(classes,
                           activation="softmax",
-                          name="spectral_attention_softmax_{}".format(label))(class_pool)
+                          name="spectral_attention_{}".format(label))(class_pool)
 
-    return attention_layers, output
+    return attention_layers, output, class_pool
 
 
 def spatial_attention(filters, classes, x):
@@ -170,6 +164,9 @@ def spatial_attention(filters, classes, x):
                                      padding="SAME",
                                      activation="sigmoid")(attention_layers)
 
+    #Elementwise multiplication of attention with incoming feature map, expand among filter dimension in 3D
+    attention_layers = layers.Multiply()([x, attention_layers])
+
     #Add a classfication branch with max pool based on size of the layer
     if filters == 32:
         pool_size = (4, 4)
@@ -181,18 +178,12 @@ def spatial_attention(filters, classes, x):
         raise ValueError("Unknown filter size for max pooling")
 
     class_pool = layers.MaxPool2D(pool_size)(attention_layers)
-    class_pool = layers.Flatten()(class_pool)
+    class_pool = layers.Flatten(name="spatial_pooling_filters_{}".format(filters))(class_pool)
     output = layers.Dense(classes,
                           activation="softmax",
-                          name="spatial_attention_softmax_{}".format(label))(class_pool)
+                          name="spatial_attention_{}".format(label))(class_pool)
 
-    return attention_layers, output
-
-
-def _weighted_sum(x):
-    return tf.keras.backend.sum(x[0] * tf.keras.backend.expand_dims(x[1], -1),
-                                axis=1,
-                                keepdims=True)
+    return attention_layers, output, class_pool
 
 
 class WeightedSum(layers.Layer):
@@ -202,13 +193,13 @@ class WeightedSum(layers.Layer):
         super(WeightedSum, self).__init__(**kwargs)
 
     def build(self, input_shape=1):
-        self.a = self.add_weight(
-            name='a',
-            shape=(),
-            initializer='ones',
-            dtype='float32',
-            trainable=True,
-        )
+        self.a = self.add_weight(name='alpha',
+                                 shape=(1),
+                                 initializer=tf.keras.initializers.Constant(0.5),
+                                 dtype='float32',
+                                 trainable=True,
+                                 constraint=tf.keras.constraints.min_max_norm(
+                                     max_value=1, min_value=0))
         super(WeightedSum, self).build(input_shape)
 
     def call(self, model_outputs):
@@ -222,8 +213,44 @@ def submodule_consensus(spatial_layers, spectral_layers, weighted_sum=True):
     """Learned weighted sum among layers"""
 
     if weighted_sum:
-        x = WeightedSum()([spatial_layers, spectral_layers])
+        x = WeightedSum(name="weighted_sum")([spatial_layers, spectral_layers])
     else:
-        x = layers.Average()([spatial_layers, spectral_layers])
+        x = layers.Add()([spatial_layers, spectral_layers])
 
     return x
+
+
+
+class Weighted3Sum(layers.Layer):
+    """A custom keras layer to learn a weighted sum of 3 tensors"""
+
+    def __init__(self, **kwargs):
+        super(Weighted3Sum, self).__init__(**kwargs)
+
+    def build(self, input_shape=1):
+        
+        self.a = self.add_weight(name='alpha',
+                                 shape=(1),
+                                 initializer=tf.keras.initializers.Constant(0.5),
+                                 dtype='float32',
+                                 trainable=True)
+        
+        self.b = self.add_weight(name='beta',
+                                     shape=(1),
+                                     initializer=tf.keras.initializers.Constant(0.5),
+                                     dtype='float32',
+                                     trainable=True)
+        
+        self.g = self.add_weight(name='gamma',
+                                     shape=(1),
+                                         initializer=tf.keras.initializers.Constant(0.5),
+                                         dtype='float32',
+                                         trainable=True)
+        
+        super(Weighted3Sum, self).build(input_shape)
+
+    def call(self, model_outputs):
+        return (self.a * model_outputs[0]) +  (self.b * model_outputs[1]) + (self.g * model_outputs[2])
+
+    def compute_output_shape(self, input_shape):
+        return input_shape[0]

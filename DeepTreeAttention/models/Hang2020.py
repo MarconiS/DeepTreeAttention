@@ -10,19 +10,14 @@ def create_model(height=11, width=11, channels=48, classes=2, weighted_sum=False
     inputs = layers.Input(shape=input_shape)
 
     #spatial subnetwork and weak attention classifications
-    spatial_layers, spatial_attention_outputs = spatial_network(inputs, classes=classes)
+    spatial_attention_outputs, pool = spatial_network(inputs, classes=classes)
 
     #spectral network
-    spectral_layers, spectral_attention_outputs = spectral_network(inputs,
-                                                                   classes=classes)
+    spectral_attention_outputs, pool = spectral_network(inputs, classes=classes)
 
-    #Learn weighted average
-    combined_output = submodule_consensus(spatial_layers,
-                                          spectral_layers,
+    #Learn weighted average of just the final conv
+    combined_output = submodule_consensus(spatial_attention_outputs[2],
+                                          spectral_attention_outputs[2],
                                           weighted_sum=weighted_sum)
 
-    #Output layers
-    outputs = combined_output
-
-    #TO DO just return input nd combined and call attention layers by name.
     return inputs, combined_output, spatial_attention_outputs, spectral_attention_outputs

@@ -2,24 +2,31 @@ name: DeepTreeAttention
 channels:
   - conda-forge
 dependencies:
+  - python=3.7
+  - gdal > 3.1
+  - rasterio > 1.0
   - tensorflow > 2.0
   - scikit-learn
+  - scikit-image
   - sphinx
   - recommonmark
   - pyyaml
+  - descartes
   - pytest > 5.0
   - numpydoc
   - h5py
   - numpy
-  - pillow
+  - pillow  
+  - bokeh
   - pip
   - matplotlib
-  - rasterio
   - sphinx_rtd_theme
   - pandas
   - twine
   - yapf
   - pip:
+    - geopandas
+    - rasterstats
     - opencv-python
     - sphinx-markdown-tables
     - bumpversion
@@ -28,3 +35,4 @@ dependencies:
     - distributed
     - dask_jobqueue
     - tensorboard_plugin_profile
+    - pydot
